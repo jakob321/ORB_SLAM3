@@ -82,6 +82,10 @@ public:
 
     bool isFinished();
 
+    bool loopDetected();
+
+    bool mergeDetected();
+
     Viewer* mpViewer;
 
 #ifdef REGISTER_TIMES
@@ -223,7 +227,7 @@ protected:
     bool mbFixScale;
 
 
-    bool mnFullBAIdx;
+    int mnFullBAIdx;
 
 
 
