@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.1)
 project(ORB_SLAM3)
 
 IF(NOT CMAKE_BUILD_TYPE)
@@ -41,6 +41,7 @@ MESSAGE(${OpenCV_VERSION})
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
+find_package(pybind11 REQUIRED)
 
 include_directories(
 ${PROJECT_SOURCE_DIR}
@@ -388,3 +389,21 @@ if(realsense2_FOUND)
             Examples_old/Stereo-Inertial/stereo_inertial_realsense_D435i.cc)
     target_link_libraries(stereo_inertial_realsense_D435i_old ${PROJECT_NAME})
 endif()
+
+# ----------------------------------------------------------
+# Build Python bindings with pybind11
+# ----------------------------------------------------------
+pybind11_add_module(orbslam3 SHARED
+    Examples/orbslam_bindings.cc
+)
+
+target_link_libraries(orbslam3 PRIVATE
+    ${PROJECT_NAME}   # ORB_SLAM3 library target
+    ${OpenCV_LIBS}
+)
+
+# Place the resulting .so (or .pyd on Windows) into the lib folder
+set_target_properties(orbslam3 PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/lib"
+)
+
