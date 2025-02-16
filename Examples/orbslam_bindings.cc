@@ -1,4 +1,5 @@
 #include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
 #include <string>
 
 #include <iostream>
@@ -13,8 +14,11 @@
 
 namespace py = pybind11;
 
-void LoadImages(const string &strImagePath, const string &strPathTimes,
-                vector<string> &vstrImages, vector<double> &vTimeStamps);
+// void LoadImages(const string &strImagePath, const string &strPathTimes,
+//                 vector<string> &vstrImages, vector<double> &vTimeStamps);
+void LoadImages(const string &strSequence, vector<string> &vstrImageFilenames,
+    vector<double> &vTimestamps);
+
 
 /**
  * Minimal function that creates an ORB-SLAM3 system, then immediately shuts it down.
@@ -38,8 +42,11 @@ std::string run_orb_slam3(const std::string &voc_file = "",
     vector<double> vTimestampsCam;
 
     cout << "Loading images..." << endl;
-    LoadImages(string(imageFolder) + "/mav0/cam0/data", string(timestampFile), vstrImageFilenames, vTimestampsCam);
+    // LoadImages(string(imageFolder), string(timestampFile), vstrImageFilenames, vTimestampsCam);
+    LoadImages(string(imageFolder), vstrImageFilenames, vTimestampsCam);
     cout << "LOADED!" << endl;
+    cout << vstrImageFilenames[100] << endl;
+    cout << vTimestampsCam[0] << vTimestampsCam[1] << vTimestampsCam[2] << vTimestampsCam[3] <<endl;
 
     int nImages = vstrImageFilenames.size();
     int tot_images = nImages;
@@ -54,8 +61,9 @@ std::string run_orb_slam3(const std::string &voc_file = "",
 
     vector<float> vTimesTrack;
     vTimesTrack.resize(tot_images);
-    cout << vstrImageFilenames[100] << endl;
+    
 
+    //return 0;
     // ---------------------------------------------
     // Main loop
     // ---------------------------------------------
@@ -64,6 +72,7 @@ std::string run_orb_slam3(const std::string &voc_file = "",
     {
 
         // Read image from file
+        std::cout<<vstrImageFilenames[ni]<<std::endl;
         im = cv::imread(vstrImageFilenames[ni], cv::IMREAD_UNCHANGED);
         double tframe = vTimestampsCam[ni];
 
@@ -78,10 +87,14 @@ std::string run_orb_slam3(const std::string &voc_file = "",
 
         // Pass the image to the SLAM system
         // cout << "tframe = " << tframe << endl;
-        SLAM.TrackMonocular(im, tframe);
+        Sophus::SE3f Tcw = SLAM.TrackMonocular(im, tframe);
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
         double ttrack = std::chrono::duration_cast<std::chrono::duration<double>>(t2 - t1).count();
         vTimesTrack[ni] = ttrack;
+
+        Sophus::SE3f Twc = Tcw.inverse(); // Now Twc is the pose of the camera in the world coordinate frame.
+        Eigen::Vector3f t = Twc.translation();
+        Eigen::Quaternionf q(Twc.rotationMatrix());
 
         // Wait to load the next frame
         double T = 0;
@@ -89,7 +102,8 @@ std::string run_orb_slam3(const std::string &voc_file = "",
             T = vTimestampsCam[ni + 1] - tframe;
         else if (ni > 0)
             T = tframe - vTimestampsCam[ni - 1];
-
+        
+        std::cout << "loop iter: " << ni << std::endl;
         // std::cout << "T: " << T << std::endl;
         // std::cout << "ttrack: " << ttrack << std::endl;
 
@@ -107,9 +121,92 @@ std::string run_orb_slam3(const std::string &voc_file = "",
     return "ORB-SLAM3 system initialized and shut down successfully.";
 }
 
-PYBIND11_MODULE(orbslam3, m)
+// void LoadImages(const string &strImagePath, const string &strPathTimes,
+//                 vector<string> &vstrImages, vector<double> &vTimeStamps)
+// {
+//     ifstream fTimes;
+//     fTimes.open(strPathTimes.c_str());
+//     vTimeStamps.reserve(5000);
+//     vstrImages.reserve(5000);
+//     while (!fTimes.eof())
+//     {
+//         string s;
+//         getline(fTimes, s);
+//         if (!s.empty())
+//         {
+//             stringstream ss;
+//             ss << s;
+//             vstrImages.push_back(strImagePath + "/" + ss.str() + ".png");
+//             double t;
+//             ss >> t;
+//             vTimeStamps.push_back(t * 1e-9);
+//         }
+//     }
+// }
+
+void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps)
 {
-    m.doc() = "Minimal Python bindings for ORB-SLAM3";
+    int nTimes = 0;
+    double fps = 30;
+    ifstream fTimes;
+    string strPathTimeFile = strPathToSequence + "/timestamps.txt";
+    fTimes.open(strPathTimeFile.c_str());
+    while(!fTimes.eof())
+    {
+        string s;
+        getline(fTimes,s);
+        if(!s.empty())
+        {
+            stringstream ss;
+            ss << s;
+            double t;
+            ss >> t;
+            nTimes++;
+        }
+    }
+
+    string strPrefixLeft = strPathToSequence + "/data/";
+
+    //const int nTimes = vTimestamps.size();
+    vstrImageFilenames.resize(nTimes);
+
+    for(int i=0; i<nTimes; i++)
+    {
+        stringstream ss;
+        ss << setfill('0') << setw(10) << i;
+        vstrImageFilenames[i] = strPrefixLeft + ss.str() + ".png";
+        vTimestamps.push_back(i/fps);
+    }
+}
+
+
+// Function that processes a NumPy array efficiently
+py::array_t<double> multiply_array(py::array_t<double> input_array) {
+    // Get buffer information (avoids copying)
+    py::buffer_info buf = input_array.request();
+
+    // Get pointer to data
+    double *ptr = static_cast<double *>(buf.ptr);
+    size_t size = buf.size;
+
+    // Create an output array (same size)
+    py::array_t<double> result(buf.size);
+    py::buffer_info buf_out = result.request();
+    double *ptr_out = static_cast<double *>(buf_out.ptr);
+
+    // Process the array (multiply each element by 2)
+    for (size_t i = 0; i < size; i++) {
+        ptr_out[i] = ptr[i] * 2;
+    }
+
+    return result;
+}
+
+// Define the module and bind functions here (single module definition)
+PYBIND11_MODULE(orbslam3, m) {
+    m.doc() = "Minimal Python bindings for ORB-SLAM3 and NumPy integration";
+
+    // Bind the SLAM function
     m.def("run_orb_slam3", &run_orb_slam3,
           "Initialize and shutdown the ORB-SLAM3 system minimally. "
           "Requires voc_file and settings_file as parameters.",
@@ -117,27 +214,8 @@ PYBIND11_MODULE(orbslam3, m)
           py::arg("settings_file") = "",
           py::arg("imageFolder") = "",
           py::arg("timestampFile") = "");
-}
 
-void LoadImages(const string &strImagePath, const string &strPathTimes,
-                vector<string> &vstrImages, vector<double> &vTimeStamps)
-{
-    ifstream fTimes;
-    fTimes.open(strPathTimes.c_str());
-    vTimeStamps.reserve(5000);
-    vstrImages.reserve(5000);
-    while (!fTimes.eof())
-    {
-        string s;
-        getline(fTimes, s);
-        if (!s.empty())
-        {
-            stringstream ss;
-            ss << s;
-            vstrImages.push_back(strImagePath + "/" + ss.str() + ".png");
-            double t;
-            ss >> t;
-            vTimeStamps.push_back(t * 1e-9);
-        }
-    }
+    // Bind the NumPy function
+    m.def("multiply_array", &multiply_array,
+          "Multiply all elements in a NumPy array by 2.");
 }
