@@ -207,10 +207,10 @@ public:
 
     unsigned int mnOriginMapId;
 
-protected:    
+    // Position in absolute coordinates
+    Eigen::Vector3f mWorldPos;
 
-     // Position in absolute coordinates
-     Eigen::Vector3f mWorldPos;
+protected:    
 
      // Keyframes observing the point and associated index in keyframe
      std::map<KeyFrame*,std::tuple<int,int> > mObservations;

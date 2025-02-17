@@ -27,18 +27,65 @@ using std::endl;
 using std::string;
 using std::vector;
 
+// Global containers to hold all camera poses and frame points.
+// Global containers to hold the camera poses and per-frame points.
+std::vector<Eigen::Matrix4f> allCamPoses;    // Each is 4x4
+std::vector<Eigen::MatrixXf> allFramePoints; // Each is 3 x m_i
+
+#include <set> // Needed for std::set
+
+std::vector<Eigen::Vector3f> GetPointCloud(ORB_SLAM3::System &SLAM)
+{
+    std::vector<Eigen::Vector3f> pointCloud;
+    auto atlas = SLAM.GetAtlas();
+    int numMaps = atlas->CountMaps();
+    std::vector<ORB_SLAM3::Map *> allMaps = atlas->GetAllMaps();
+
+    for (size_t i = 0; i < static_cast<size_t>(numMaps); i++)
+    {
+        ORB_SLAM3::Map *pMap = allMaps[i];
+        if (!pMap)
+            continue;
+
+        const std::vector<ORB_SLAM3::MapPoint *> &vpMPs = pMap->GetAllMapPoints();
+        const std::vector<ORB_SLAM3::MapPoint *> &vpRefMPs = pMap->GetReferenceMapPoints();
+        std::set<ORB_SLAM3::MapPoint *> spRefMPs(vpRefMPs.begin(), vpRefMPs.end());
+
+        // Add non-reference map points (skip bad ones and those in the reference set)
+        for (size_t j = 0; j < vpMPs.size(); j++)
+        {
+            if (vpMPs[j]->isBad() || spRefMPs.count(vpMPs[j]))
+                continue;
+            Eigen::Vector3f pos = vpMPs[j]->GetWorldPos();
+            pointCloud.push_back(pos);
+        }
+
+        // Add reference map points (skip bad ones)
+        for (auto it = spRefMPs.begin(); it != spRefMPs.end(); ++it)
+        {
+            if ((*it)->isBad())
+                continue;
+            Eigen::Vector3f pos = (*it)->GetWorldPos();
+            pointCloud.push_back(pos);
+        }
+    }
+
+    return pointCloud;
+}
+
 // ================= Global Variables for SLAM Thread and Camera Pose =================
 
 // Global variables to store the latest camera pose as a 4x4 matrix.
 // We use a mutex to ensure that the pose is updated/read safely.
 std::mutex camPoseMutex;
 Eigen::Matrix4f latestCamPose = Eigen::Matrix4f::Identity();
-
+std::vector<ORB_SLAM3::MapPoint *> latestCamPoints;
+std::vector<Eigen::Vector3f> allPoints;
 
 void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps)
 {
     int nTimes = 0;
-    double fps = 100;
+    double fps = 10;
     ifstream fTimes;
     string strPathTimeFile = strPathToSequence + "/timestamps.txt";
     fTimes.open(strPathTimeFile.c_str());
@@ -105,7 +152,7 @@ std::string run_orb_slam3(const std::string &voc_file = "",
     vector<float> vTimesTrack(nImages, 0.0f);
 
     cv::Mat im;
-    for (int ni = 0; ni < (nImages - 10); ni++)
+    for (int ni = 0; ni < (nImages - 400); ni++)
     {
         // cout << "Processing image: " << vstrImageFilenames[ni] << endl;
         im = cv::imread(vstrImageFilenames[ni], cv::IMREAD_UNCHANGED);
@@ -127,11 +174,34 @@ std::string run_orb_slam3(const std::string &voc_file = "",
         // Get the camera pose in the world coordinate frame.
         Sophus::SE3f Twc = Tcw.inverse();
 
-        // Update the global camera pose.
         {
             std::lock_guard<std::mutex> lock(camPoseMutex);
-            // Convert to a 4x4 matrix of type float.
+            // Update current camera pose.
             latestCamPose = Twc.matrix().cast<float>();
+            // Append the current camera pose.
+            allCamPoses.push_back(latestCamPose);
+
+            // Filter the tracked map points.
+            std::vector<ORB_SLAM3::MapPoint *> trackedMapPoints = SLAM.GetTrackedMapPoints();
+            std::vector<ORB_SLAM3::MapPoint *> nonNullMapPoints;
+            std::copy_if(trackedMapPoints.begin(), trackedMapPoints.end(),
+                         std::back_inserter(nonNullMapPoints),
+                         [](ORB_SLAM3::MapPoint *p)
+                         { return p != nullptr; });
+            cout << "Filtered map points: " << nonNullMapPoints.size() << endl;
+
+            // Create a 3 x m matrix for the current frame’s points.
+            size_t m = nonNullMapPoints.size();
+            Eigen::MatrixXf framePts(3, m);
+            for (size_t i = 0; i < m; i++)
+            {
+                Eigen::Vector3f pos = nonNullMapPoints[i]->mWorldPos;
+                framePts(0, i) = pos(0);
+                framePts(1, i) = pos(1);
+                framePts(2, i) = pos(2);
+            }
+            // Append the current frame’s points.
+            allFramePoints.push_back(framePts);
         }
 
         double T = 0;
@@ -176,21 +246,78 @@ py::array_t<double> multiply_array(py::array_t<double> input_array)
     return result;
 }
 
+// Retrieves the latest camera keypoints as a 2D NumPy array.
+// Each keypoint is represented by [x, y, size, angle, response, octave, class_id]
+// py::array_t<float> get_camera_points() {
+//     std::lock_guard<std::mutex> lock(camPoseMutex);
+//     // Number of keypoints and 7 attributes per keypoint.
+//     size_t numPoints = latestCamPoints.size();
+//     py::array_t<float> result(py::array::ShapeContainer({static_cast<py::ssize_t>(numPoints), 7}));
+//     auto r = result.mutable_unchecked<2>();
+//     for (size_t i = 0; i < numPoints; i++) {
+//         const cv::KeyPoint& kp = latestCamPoints[i];
+//         r(i, 0) = kp.pt.x;
+//         r(i, 1) = kp.pt.y;
+//         r(i, 2) = kp.size;
+//         r(i, 3) = kp.angle;
+//         r(i, 4) = kp.response;
+//         r(i, 5) = static_cast<float>(kp.octave);
+//         r(i, 6) = static_cast<float>(kp.class_id);
+//     }
+//     return result;
+// }
+
 // Retrieves the latest camera pose as a 4x4 NumPy array.
-py::array_t<float> get_camera_pose()
-{
+// py::array_t<float> get_camera_pose()
+// {
+//     std::lock_guard<std::mutex> lock(camPoseMutex);
+//     py::array_t<float> result({4, 4});
+//     auto r = result.mutable_unchecked<2>();
+//     for (size_t i = 0; i < 4; i++)
+//     {
+//         for (size_t j = 0; j < 4; j++)
+//         {
+//             r(i, j) = latestCamPose(i, j);
+//         }
+//     }
+//     return result;
+// }
+
+py::tuple get_all_data_np() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
-    py::array_t<float> result({4, 4});
-    auto r = result.mutable_unchecked<2>();
-    for (size_t i = 0; i < 4; i++)
-    {
-        for (size_t j = 0; j < 4; j++)
-        {
-            r(i, j) = latestCamPose(i, j);
+    size_t n = allCamPoses.size();
+
+    // Create a shape vector for poses: (4,4,n)
+    std::vector<py::ssize_t> pose_shape{4, 4, static_cast<py::ssize_t>(n)};
+    py::array_t<float> poses(pose_shape);
+    auto poses_buf = poses.mutable_unchecked<3>();
+    for (size_t k = 0; k < n; k++) {
+        for (size_t i = 0; i < 4; i++) {
+            for (size_t j = 0; j < 4; j++) {
+                poses_buf(i, j, k) = allCamPoses[k](i, j);
+            }
         }
     }
-    return result;
+
+    // Build a Python list of point arrays (each of shape (3, m))
+    py::list points_list;
+    for (size_t k = 0; k < allFramePoints.size(); k++) {
+        Eigen::MatrixXf &pts = allFramePoints[k];  // pts is 3 x m_k
+        int m = pts.cols();
+        std::vector<py::ssize_t> pts_shape{3, m};
+        py::array_t<float> pts_arr(pts_shape);
+        auto pts_buf = pts_arr.mutable_unchecked<2>();
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < m; j++) {
+                pts_buf(i, j) = pts(i, j);
+            }
+        }
+        points_list.append(pts_arr);
+    }
+
+    return py::make_tuple(poses, points_list);
 }
+
 
 // Define the module and bind functions here (single module definition)
 PYBIND11_MODULE(orbslam3, m)
@@ -210,6 +337,14 @@ PYBIND11_MODULE(orbslam3, m)
     m.def("multiply_array", &multiply_array,
           "Multiply all elements in a NumPy array by 2.");
 
-    m.def("get_camera_pose", &get_camera_pose,
-          "Retrieve the latest camera pose (world coordinate frame) as a 4x4 NumPy array.");
+    m.def("get_all_data_np", &get_all_data_np,
+          "Return a tuple (poses, points_list) where 'poses' is a NumPy array of shape (4,4,n) "
+          "and 'points_list' is a list of NumPy arrays (each of shape (3, m_i)).");
+
+// m.def("get_camera_pose", &get_camera_pose,
+//       "Retrieve the latest camera pose (world coordinate frame) as a 4x4 NumPy array.");
+
+// m.def("get_camera_points", &get_camera_points,
+//   "Retrieve the latest camera keypoints as a 2D NumPy array "
+//   "(each row: x, y, size, angle, response, octave, class_id).");
 }
