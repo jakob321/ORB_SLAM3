@@ -82,10 +82,10 @@ Eigen::Matrix4f latestCamPose = Eigen::Matrix4f::Identity();
 std::vector<ORB_SLAM3::MapPoint *> latestCamPoints;
 std::vector<Eigen::Vector3f> allPoints;
 
-void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps)
+void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps, int int_fps)
 {
     int nTimes = 0;
-    double fps = 10;
+    double fps = static_cast<double>(int_fps);
     ifstream fTimes;
     string strPathTimeFile = strPathToSequence + "/timestamps.txt";
     fTimes.open(strPathTimeFile.c_str());
@@ -128,7 +128,9 @@ void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilena
 std::string run_orb_slam3(const std::string &voc_file = "",
                           const std::string &settings_file = "",
                           const std::string &imageFolder = "",
-                          const std::string &timestampFile = "")
+                          const std::string &timestampFile = "",
+                          int nrOfImg = -1,
+                          int fps = 10)
 {
     py::gil_scoped_release release;
     if (voc_file.empty() || settings_file.empty())
@@ -140,7 +142,7 @@ std::string run_orb_slam3(const std::string &voc_file = "",
     vector<double> vTimestampsCam;
 
     cout << "Loading images..." << endl;
-    LoadImages(imageFolder, vstrImageFilenames, vTimestampsCam);
+    LoadImages(imageFolder, vstrImageFilenames, vTimestampsCam, fps);
     cout << "Images loaded!" << endl;
     int nImages = vstrImageFilenames.size();
     cout << "Total images loaded: " << nImages << endl;
@@ -151,8 +153,12 @@ std::string run_orb_slam3(const std::string &voc_file = "",
 
     vector<float> vTimesTrack(nImages, 0.0f);
 
+    if (nrOfImg != -1){
+        nImages=nrOfImg;
+    }
+
     cv::Mat im;
-    for (int ni = 0; ni < (nImages - 400); ni++)
+    for (int ni = 0; ni < (nImages); ni++)
     {
         // cout << "Processing image: " << vstrImageFilenames[ni] << endl;
         im = cv::imread(vstrImageFilenames[ni], cv::IMREAD_UNCHANGED);
@@ -331,7 +337,9 @@ PYBIND11_MODULE(orbslam3, m)
           py::arg("voc_file") = "",
           py::arg("settings_file") = "",
           py::arg("imageFolder") = "",
-          py::arg("timestampFile") = "");
+          py::arg("timestampFile") = "",
+          py::arg("nrOfImg") = -1,
+          py::arg("fps") = 10);
 
     // Bind the NumPy function
     m.def("multiply_array", &multiply_array,
@@ -340,11 +348,4 @@ PYBIND11_MODULE(orbslam3, m)
     m.def("get_all_data_np", &get_all_data_np,
           "Return a tuple (poses, points_list) where 'poses' is a NumPy array of shape (4,4,n) "
           "and 'points_list' is a list of NumPy arrays (each of shape (3, m_i)).");
-
-// m.def("get_camera_pose", &get_camera_pose,
-//       "Retrieve the latest camera pose (world coordinate frame) as a 4x4 NumPy array.");
-
-// m.def("get_camera_points", &get_camera_points,
-//   "Retrieve the latest camera keypoints as a 2D NumPy array "
-//   "(each row: x, y, size, angle, response, octave, class_id).");
 }
