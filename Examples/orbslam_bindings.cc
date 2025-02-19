@@ -30,7 +30,8 @@ using std::vector;
 // Global containers to hold all camera poses and frame points.
 // Global containers to hold the camera poses and per-frame points.
 std::vector<Eigen::Matrix4f> allCamPoses;    // Each is 4x4
-std::vector<Eigen::MatrixXf> allFramePoints; // Each is 3 x m_i
+std::vector<std::vector<ORB_SLAM3::MapPoint*>> allFramePoints;
+
 
 #include <set> // Needed for std::set
 
@@ -197,17 +198,9 @@ std::string run_orb_slam3(const std::string &voc_file = "",
             cout << "Filtered map points: " << nonNullMapPoints.size() << endl;
 
             // Create a 3 x m matrix for the current frame’s points.
-            size_t m = nonNullMapPoints.size();
-            Eigen::MatrixXf framePts(3, m);
-            for (size_t i = 0; i < m; i++)
-            {
-                Eigen::Vector3f pos = nonNullMapPoints[i]->mWorldPos;
-                framePts(0, i) = pos(0);
-                framePts(1, i) = pos(1);
-                framePts(2, i) = pos(2);
-            }
-            // Append the current frame’s points.
-            allFramePoints.push_back(framePts);
+            // Minimal change: store the pointers directly.
+            allFramePoints.push_back(nonNullMapPoints);
+
         }
 
         double T = 0;
@@ -252,43 +245,6 @@ py::array_t<double> multiply_array(py::array_t<double> input_array)
     return result;
 }
 
-// Retrieves the latest camera keypoints as a 2D NumPy array.
-// Each keypoint is represented by [x, y, size, angle, response, octave, class_id]
-// py::array_t<float> get_camera_points() {
-//     std::lock_guard<std::mutex> lock(camPoseMutex);
-//     // Number of keypoints and 7 attributes per keypoint.
-//     size_t numPoints = latestCamPoints.size();
-//     py::array_t<float> result(py::array::ShapeContainer({static_cast<py::ssize_t>(numPoints), 7}));
-//     auto r = result.mutable_unchecked<2>();
-//     for (size_t i = 0; i < numPoints; i++) {
-//         const cv::KeyPoint& kp = latestCamPoints[i];
-//         r(i, 0) = kp.pt.x;
-//         r(i, 1) = kp.pt.y;
-//         r(i, 2) = kp.size;
-//         r(i, 3) = kp.angle;
-//         r(i, 4) = kp.response;
-//         r(i, 5) = static_cast<float>(kp.octave);
-//         r(i, 6) = static_cast<float>(kp.class_id);
-//     }
-//     return result;
-// }
-
-// Retrieves the latest camera pose as a 4x4 NumPy array.
-// py::array_t<float> get_camera_pose()
-// {
-//     std::lock_guard<std::mutex> lock(camPoseMutex);
-//     py::array_t<float> result({4, 4});
-//     auto r = result.mutable_unchecked<2>();
-//     for (size_t i = 0; i < 4; i++)
-//     {
-//         for (size_t j = 0; j < 4; j++)
-//         {
-//             r(i, j) = latestCamPose(i, j);
-//         }
-//     }
-//     return result;
-// }
-
 py::tuple get_all_data_np() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
     size_t n = allCamPoses.size();
@@ -308,18 +264,26 @@ py::tuple get_all_data_np() {
     // Build a Python list of point arrays (each of shape (3, m))
     py::list points_list;
     for (size_t k = 0; k < allFramePoints.size(); k++) {
-        Eigen::MatrixXf &pts = allFramePoints[k];  // pts is 3 x m_k
-        int m = pts.cols();
+        const std::vector<ORB_SLAM3::MapPoint*>& frameMPs = allFramePoints[k];
+        int m = frameMPs.size();
         std::vector<py::ssize_t> pts_shape{3, m};
         py::array_t<float> pts_arr(pts_shape);
         auto pts_buf = pts_arr.mutable_unchecked<2>();
-        for (int i = 0; i < 3; i++) {
-            for (int j = 0; j < m; j++) {
-                pts_buf(i, j) = pts(i, j);
+        for (int j = 0; j < m; j++) {
+            if (frameMPs[j] && !frameMPs[j]->isBad()) {
+                Eigen::Vector3f pos = frameMPs[j]->mWorldPos;
+                pts_buf(0, j) = pos(0);
+                pts_buf(1, j) = pos(1);
+                pts_buf(2, j) = pos(2);
+            } else {
+                pts_buf(0, j) = 0;
+                pts_buf(1, j) = 0;
+                pts_buf(2, j) = 0;
             }
         }
         points_list.append(pts_arr);
     }
+    
 
     return py::make_tuple(poses, points_list);
 }
