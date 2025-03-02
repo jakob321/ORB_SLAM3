@@ -293,6 +293,7 @@ public:
 
     IMU::Bias GetImuBias();
 
+    float GetDepth(MapPoint* pMP);
     bool ProjectPointDistort(MapPoint* pMP, cv::Point2f &kp, float &u, float &v);
     bool ProjectPointUnDistort(MapPoint* pMP, cv::Point2f &kp, float &u, float &v);
 

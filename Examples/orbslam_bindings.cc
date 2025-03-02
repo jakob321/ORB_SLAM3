@@ -15,6 +15,7 @@
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <filesystem>
 
 #include <Eigen/Dense>
 
@@ -46,7 +47,7 @@ std::vector<Eigen::Vector3f> GetPointCloud(ORB_SLAM3::System &SLAM)
     {
         ORB_SLAM3::Map *pMap = allMaps[i];
         if (!pMap)
-            continue;
+            continue; 
 
         const std::vector<ORB_SLAM3::MapPoint *> &vpMPs = pMap->GetAllMapPoints();
         const std::vector<ORB_SLAM3::MapPoint *> &vpRefMPs = pMap->GetReferenceMapPoints();
@@ -85,38 +86,35 @@ std::vector<Eigen::Vector3f> allPoints;
 
 void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps, int int_fps)
 {
-    int nTimes = 0;
     double fps = static_cast<double>(int_fps);
-    ifstream fTimes;
-    string strPathTimeFile = strPathToSequence + "/timestamps.txt";
-    fTimes.open(strPathTimeFile.c_str());
-    while (!fTimes.eof())
+    std::string strDataPath = strPathToSequence + "/data/";
+
+    // Count the number of .png files in the data directory.
+    int nTimes = 0;
+    for (const auto &entry : std::filesystem::directory_iterator(strDataPath))
     {
-        string s;
-        getline(fTimes, s);
-        if (!s.empty())
+        if (entry.is_regular_file() && entry.path().extension() == ".png")
         {
-            stringstream ss;
-            ss << s;
-            double t;
-            ss >> t;
             nTimes++;
         }
     }
 
-    string strPrefixLeft = strPathToSequence + "/data/";
-
-    // const int nTimes = vTimestamps.size();
+    // Prepare the vectors based on the number of images found.
     vstrImageFilenames.resize(nTimes);
+    vTimestamps.clear();
 
+    // Generate filenames and timestamps.
     for (int i = 0; i < nTimes; i++)
     {
-        stringstream ss;
-        ss << setfill('0') << setw(10) << i;
-        vstrImageFilenames[i] = strPrefixLeft + ss.str() + ".png";
+        std::stringstream ss;
+        //ss << std::setfill('0') << std::setw(10) << i;
+        ss << std::setfill('0') << std::setw(5) << i;
+        vstrImageFilenames[i] = strDataPath + ss.str() + ".png";
+        // cout << strDataPath + ss.str() + ".jpg" << endl;
         vTimestamps.push_back(i / fps);
     }
 }
+
 
 /**
  * Minimal function that creates an ORB-SLAM3 system, then immediately shuts it down.
@@ -245,6 +243,69 @@ py::array_t<double> multiply_array(py::array_t<double> input_array)
     return result;
 }
 
+py::tuple get_2d_points() {
+    std::lock_guard<std::mutex> lock(camPoseMutex);
+    py::list frames_list;
+
+    // Iterate over all frames stored in allFramePoints
+    for (size_t k = 0; k < allFramePoints.size(); k++) {
+        const std::vector<ORB_SLAM3::MapPoint*>& frameMPs = allFramePoints[k];
+
+        // Skip if there are no MapPoints for this frame.
+        if (frameMPs.empty())
+            continue;
+
+        // Get the reference KeyFrame from the first valid MapPoint.
+        // (This assumes that all MapPoints in a frame come from the same keyframe.)
+        ORB_SLAM3::MapPoint* firstMP = frameMPs[0];
+        if (!firstMP)
+            continue;
+
+        ORB_SLAM3::KeyFrame* frame = firstMP->GetReferenceKeyFrame();
+        if (!frame)
+            continue;
+
+        std::vector<float> points; // To store u, v, depth for valid points
+
+        // Process each MapPoint in this frame.
+        for (size_t j = 0; j < frameMPs.size(); ++j) {
+            ORB_SLAM3::MapPoint* pMP = frameMPs[j];
+            if (!pMP)
+                continue;
+
+            cv::Point2f kp;
+            float u, v;
+
+            // Project the MapPoint into 2D.
+            if (frame->ProjectPointDistort(pMP, kp, u, v)) {
+                // Get depth using your existing GetDepth() function.
+                float depth = frame->GetDepth(pMP);
+                if (depth > 0.0f) {  // Only add valid depths.
+                    points.push_back(u);
+                    points.push_back(v);
+                    points.push_back(depth);
+                }
+            }
+        }
+
+        // Create a NumPy array only if we have valid points.
+        int num_points = points.size() / 3;
+        if (num_points == 0)
+            continue;
+
+        py::array_t<float> frame_array({3, num_points});
+        auto arr = frame_array.mutable_unchecked<2>();
+        for (int j = 0; j < num_points; ++j) {
+            arr(0, j) = points[3 * j + 0];  // u coordinate
+            arr(1, j) = points[3 * j + 1];  // v coordinate
+            arr(2, j) = points[3 * j + 2];  // depth
+        }
+        frames_list.append(frame_array);
+    }
+    return py::make_tuple(frames_list);
+}
+
+
 py::tuple get_all_data_np() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
     size_t n = allCamPoses.size();
@@ -271,7 +332,7 @@ py::tuple get_all_data_np() {
         auto pts_buf = pts_arr.mutable_unchecked<2>();
         for (int j = 0; j < m; j++) {
             if (frameMPs[j] && !frameMPs[j]->isBad()) {
-                Eigen::Vector3f pos = frameMPs[j]->mWorldPos;
+                Eigen::Vector3f pos = frameMPs[j]->GetWorldPos();
                 pts_buf(0, j) = pos(0);
                 pts_buf(1, j) = pos(1);
                 pts_buf(2, j) = pos(2);
@@ -312,4 +373,7 @@ PYBIND11_MODULE(orbslam3, m)
     m.def("get_all_data_np", &get_all_data_np,
           "Return a tuple (poses, points_list) where 'poses' is a NumPy array of shape (4,4,n) "
           "and 'points_list' is a list of NumPy arrays (each of shape (3, m_i)).");
+
+    m.def("get_2d_points", &get_2d_points,
+        "abc");
 }

@@ -1008,6 +1008,23 @@ void KeyFrame::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
     UpdateBestCovisibles();
 }
 
+float KeyFrame::GetDepth(MapPoint* pMP)
+{
+    // 3D in absolute coordinates
+    Eigen::Vector3f P = pMP->GetWorldPos();
+
+    // 3D in camera coordinates
+    Eigen::Vector3f Pc = mRcw * P + mTcw.translation();
+    const float &PcZ = Pc(2);
+
+    // Check positive depth
+    if(PcZ<0.0f)
+    {
+        return 0.0f;
+    }
+    return PcZ;
+}
+
 bool KeyFrame::ProjectPointDistort(MapPoint* pMP, cv::Point2f &kp, float &u, float &v)
 {
 
