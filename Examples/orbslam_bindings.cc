@@ -75,6 +75,8 @@ std::vector<Eigen::Vector3f> GetPointCloud(ORB_SLAM3::System &SLAM)
     return pointCloud;
 }
 
+
+
 // ================= Global Variables for SLAM Thread and Camera Pose =================
 
 // Global variables to store the latest camera pose as a 4x4 matrix.
@@ -86,31 +88,39 @@ std::vector<Eigen::Vector3f> allPoints;
 
 void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilenames, vector<double> &vTimestamps, int int_fps)
 {
-    double fps = static_cast<double>(int_fps);
-    std::string strDataPath = strPathToSequence + "/data/";
+    std::string strDataPath = strPathToSequence;
+    vstrImageFilenames.clear();
+    vTimestamps.clear();
 
-    // Count the number of .png files in the data directory.
-    int nTimes = 0;
+    cout<<"path:::"<<endl;
+    cout<<strDataPath<<endl;
+
+    // Iterate through the directory and add each .png or .jpg file to the vector.
     for (const auto &entry : std::filesystem::directory_iterator(strDataPath))
     {
-        if (entry.is_regular_file() && entry.path().extension() == ".png")
+        if (entry.is_regular_file())
         {
-            nTimes++;
+            // Get the file extension and convert it to lowercase.
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+            cout << entry.path().string() <<endl;
+
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
+            {
+                cout << "in the if statement" <<endl;
+                vstrImageFilenames.push_back(entry.path().string());
+            }
         }
     }
 
-    // Prepare the vectors based on the number of images found.
-    vstrImageFilenames.resize(nTimes);
-    vTimestamps.clear();
+    // Optionally sort the filenames if order is important.
+    std::sort(vstrImageFilenames.begin(), vstrImageFilenames.end());
 
-    // Generate filenames and timestamps.
-    for (int i = 0; i < nTimes; i++)
+    // Generate timestamps based on the frame rate.
+    double fps = static_cast<double>(int_fps);
+    for (size_t i = 0; i < vstrImageFilenames.size(); i++)
     {
-        std::stringstream ss;
-        //ss << std::setfill('0') << std::setw(10) << i;
-        ss << std::setfill('0') << std::setw(5) << i;
-        vstrImageFilenames[i] = strDataPath + ss.str() + ".png";
-        // cout << strDataPath + ss.str() + ".jpg" << endl;
         vTimestamps.push_back(i / fps);
     }
 }
@@ -127,7 +137,6 @@ void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilena
 std::string run_orb_slam3(const std::string &voc_file = "",
                           const std::string &settings_file = "",
                           const std::string &imageFolder = "",
-                          const std::string &timestampFile = "",
                           int nrOfImg = -1,
                           int fps = 10)
 {
@@ -362,7 +371,6 @@ PYBIND11_MODULE(orbslam3, m)
           py::arg("voc_file") = "",
           py::arg("settings_file") = "",
           py::arg("imageFolder") = "",
-          py::arg("timestampFile") = "",
           py::arg("nrOfImg") = -1,
           py::arg("fps") = 10);
 
