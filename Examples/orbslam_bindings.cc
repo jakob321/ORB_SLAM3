@@ -202,7 +202,7 @@ std::string run_orb_slam3(const std::string &voc_file = "",
                          std::back_inserter(nonNullMapPoints),
                          [](ORB_SLAM3::MapPoint *p)
                          { return p != nullptr; });
-            cout << "Filtered map points: " << nonNullMapPoints.size() << endl;
+            // cout << "Filtered map points: " << nonNullMapPoints.size() << endl;
 
             // Create a 3 x m matrix for the current frame’s points.
             // Minimal change: store the pointers directly.
