@@ -104,11 +104,11 @@ void LoadImages(const string &strPathToSequence, vector<string> &vstrImageFilena
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-            cout << entry.path().string() <<endl;
+            // cout << entry.path().string() <<endl;
 
             if (ext == ".png" || ext == ".jpg" || ext == ".jpeg")
             {
-                cout << "in the if statement" <<endl;
+                // cout << "in the if statement" <<endl;
                 vstrImageFilenames.push_back(entry.path().string());
             }
         }
