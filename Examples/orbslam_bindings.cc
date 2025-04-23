@@ -31,6 +31,7 @@ using std::vector;
 // Global containers to hold all camera poses and frame points.
 // Global containers to hold the camera poses and per-frame points.
 std::vector<Eigen::Matrix4f> allCamPoses;    // Each is 4x4
+std::vector<std::vector<cv::Point2f>> all2dPoints;
 std::vector<std::vector<ORB_SLAM3::MapPoint*>> allFramePoints;
 
 
@@ -207,6 +208,7 @@ std::string run_orb_slam3(const std::string &voc_file = "",
             // Create a 3 x m matrix for the current frame’s points.
             // Minimal change: store the pointers directly.
             allFramePoints.push_back(nonNullMapPoints);
+            all2dPoints.push_back(SLAM.Get2dPoints());
 
         }
 
@@ -256,61 +258,45 @@ py::tuple get_2d_points() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
     py::list frames_list;
 
-    // Iterate over all frames stored in allFramePoints
-    for (size_t k = 0; k < allFramePoints.size(); k++) {
-        const std::vector<ORB_SLAM3::MapPoint*>& frameMPs = allFramePoints[k];
+    // Iterate over all frames stored in all2dPoints
+    for (size_t k = 0; k < all2dPoints.size(); k++) {
+        const std::vector<cv::Point2f>& frame2DPoints = all2dPoints[k];
+        
+        // Create a points vector for this frame
+        std::vector<float> points;
+        
+        // Process each 2D point in this frame
+        for (size_t j = 0; j < frame2DPoints.size(); ++j) {
+            const cv::Point2f& pt = frame2DPoints[j];
+            
+            // Store u, v coordinates (depth is not available from 2D points)
+            points.push_back(pt.x);  // u coordinate
+            points.push_back(pt.y);  // v coordinate
+            points.push_back(0.0f);  // Placeholder for depth which we don't have
+        }
 
-        // Skip if there are no MapPoints for this frame.
-        if (frameMPs.empty())
-            continue;
-
-        // Get the reference KeyFrame from the first valid MapPoint.
-        // (This assumes that all MapPoints in a frame come from the same keyframe.)
-        ORB_SLAM3::MapPoint* firstMP = frameMPs[0];
-        if (!firstMP)
-            continue;
-
-        ORB_SLAM3::KeyFrame* frame = firstMP->GetReferenceKeyFrame();
-        if (!frame)
-            continue;
-
-        std::vector<float> points; // To store u, v, depth for valid points
-
-        // Process each MapPoint in this frame.
-        for (size_t j = 0; j < frameMPs.size(); ++j) {
-            ORB_SLAM3::MapPoint* pMP = frameMPs[j];
-            if (!pMP)
-                continue;
-
-            cv::Point2f kp;
-            float u, v;
-
-            // Project the MapPoint into 2D.
-            if (frame->ProjectPointDistort(pMP, kp, u, v)) {
-                // Get depth using your existing GetDepth() function.
-                float depth = frame->GetDepth(pMP);
-                if (depth > 0.0f) {  // Only add valid depths.
-                    points.push_back(u);
-                    points.push_back(v);
-                    points.push_back(depth);
-                }
+        // Create a NumPy array even if there are no points (to maintain frame indexing)
+        int num_points = frame2DPoints.size();
+        
+        if (num_points > 0) {
+            // If we have points, create properly sized array
+            py::array_t<float> frame_array({3, num_points});
+            auto arr = frame_array.mutable_unchecked<2>();
+            for (int j = 0; j < num_points; ++j) {
+                arr(0, j) = points[3 * j + 0];  // u coordinate  
+                arr(1, j) = points[3 * j + 1];  // v coordinate
+                arr(2, j) = points[3 * j + 2];  // depth placeholder
             }
+            frames_list.append(frame_array);
+        } else {
+            // If no points, create an array with shape (3,0) using a different approach
+            std::vector<ssize_t> shape = {3, 0};
+            std::vector<ssize_t> strides = {sizeof(float), sizeof(float)};
+            py::array_t<float> empty_array(shape, strides);
+            frames_list.append(empty_array);
         }
-
-        // Create a NumPy array only if we have valid points.
-        int num_points = points.size() / 3;
-        if (num_points == 0)
-            continue;
-
-        py::array_t<float> frame_array({3, num_points});
-        auto arr = frame_array.mutable_unchecked<2>();
-        for (int j = 0; j < num_points; ++j) {
-            arr(0, j) = points[3 * j + 0];  // u coordinate
-            arr(1, j) = points[3 * j + 1];  // v coordinate
-            arr(2, j) = points[3 * j + 2];  // depth
-        }
-        frames_list.append(frame_array);
     }
+    
     return py::make_tuple(frames_list);
 }
 

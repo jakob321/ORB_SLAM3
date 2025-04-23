@@ -473,6 +473,45 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
     return Tcw;
 }
 
+vector<cv::Point2f> System::Get2dPoints()
+{
+    vector<cv::KeyPoint> mvCurrentKeys = mpTracker->mCurrentFrame.mvKeys;
+    int N = mvCurrentKeys.size();
+    vector<bool> mvbVO = vector<bool>(N, false);
+    vector<bool> mvbMap = vector<bool>(N, false);
+    vector<cv::Point2f> filtered2dPoints; // No need to set initial size, we'll push_back
+    
+    if(mpTracker->mLastProcessedState==Tracking::OK)
+    {
+        for(int i=0; i<N; i++)
+        {
+            MapPoint* pMP = mpTracker->mCurrentFrame.mvpMapPoints[i];
+            if(pMP)
+            {
+                if(!mpTracker->mCurrentFrame.mvbOutlier[i])
+                {
+                    if(pMP->Observations()>0)
+                        mvbMap[i]=true;
+                    else
+                        mvbVO[i]=true;
+                }
+            }
+        }
+        
+        // Use N instead of defining a new variable n - they're the same size
+        for(int i=0; i<N; i++)
+        {
+            if(mvbVO[i] || mvbMap[i]) // Note: using mvbVO and mvbMap, not vbVO and vbMap
+            {
+                // Append to our filtered points list
+                filtered2dPoints.push_back(mvCurrentKeys[i].pt);
+            }
+        }
+    }
+    
+    return filtered2dPoints;
+}
+
 
 
 void System::ActivateLocalizationMode()
