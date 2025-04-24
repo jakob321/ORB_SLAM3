@@ -473,13 +473,40 @@ Sophus::SE3f System::TrackMonocular(const cv::Mat &im, const double &timestamp, 
     return Tcw;
 }
 
-vector<cv::Point2f> System::Get2dPoints()
+vector<cv::Point3f> System::Get3dPoints()
+{
+    Map* pActiveMap = mpAtlas->GetCurrentMap();
+    if(!pActiveMap)
+        return vector<cv::Point3f>(); // Return empty vector if no active map
+
+    const vector<MapPoint*> &vpMPs = pActiveMap->GetAllMapPoints();
+
+    if(vpMPs.empty())
+        return vector<cv::Point3f>(); // Return empty vector if no map points
+
+    vector<cv::Point3f> filtered3dPoints; // Container for the 3D points
+    
+    for(size_t i=0, iend=vpMPs.size(); i<iend; i++)
+    {
+        if(vpMPs[i]->isBad())
+            continue;
+        
+        Eigen::Matrix<float,3,1> pos = vpMPs[i]->GetWorldPos();
+        // Convert Eigen matrix to cv::Point3f and add to our list
+        cv::Point3f point(pos(0), pos(1), pos(2));
+        filtered3dPoints.push_back(point);
+    }
+    
+    return filtered3dPoints;
+}
+
+vector<cv::Point3f> System::Get2dPoints()
 {
     vector<cv::KeyPoint> mvCurrentKeys = mpTracker->mCurrentFrame.mvKeys;
     int N = mvCurrentKeys.size();
     vector<bool> mvbVO = vector<bool>(N, false);
     vector<bool> mvbMap = vector<bool>(N, false);
-    vector<cv::Point2f> filtered2dPoints; // No need to set initial size, we'll push_back
+    vector<cv::Point3f> filtered3dPoints; // Changed to Point3f to include depth
     
     if(mpTracker->mLastProcessedState==Tracking::OK)
     {
@@ -503,15 +530,19 @@ vector<cv::Point2f> System::Get2dPoints()
         {
             if(mvbVO[i] || mvbMap[i]) // Note: using mvbVO and mvbMap, not vbVO and vbMap
             {
-                // Append to our filtered points list
-                filtered2dPoints.push_back(mvCurrentKeys[i].pt);
+                // Get depth from mCurrentFrame.mvDepth if available
+                float depth = 0.0f;
+                if(i < mpTracker->mCurrentFrame.mvDepth.size())
+                    depth = mpTracker->mCurrentFrame.mvDepth[i];
+                
+                // Append to our filtered points list with depth as z-coordinate
+                filtered3dPoints.push_back(cv::Point3f(mvCurrentKeys[i].pt.x, mvCurrentKeys[i].pt.y, depth));
             }
         }
     }
     
-    return filtered2dPoints;
+    return filtered3dPoints;
 }
-
 
 
 void System::ActivateLocalizationMode()

@@ -31,8 +31,9 @@ using std::vector;
 // Global containers to hold all camera poses and frame points.
 // Global containers to hold the camera poses and per-frame points.
 std::vector<Eigen::Matrix4f> allCamPoses;    // Each is 4x4
-std::vector<std::vector<cv::Point2f>> all2dPoints;
-std::vector<std::vector<ORB_SLAM3::MapPoint*>> allFramePoints;
+std::vector<std::vector<cv::Point3f>> all2dPoints;
+std::vector<std::vector<cv::Point3f>> all3dPoints;
+// std::vector<std::vector<ORB_SLAM3::MapPoint*>> allFramePoints;
 
 
 #include <set> // Needed for std::set
@@ -195,21 +196,8 @@ std::string run_orb_slam3(const std::string &voc_file = "",
             latestCamPose = Twc.matrix().cast<float>();
             // Append the current camera pose.
             allCamPoses.push_back(latestCamPose);
-
-            // Filter the tracked map points.
-            std::vector<ORB_SLAM3::MapPoint *> trackedMapPoints = SLAM.GetTrackedMapPoints();
-            std::vector<ORB_SLAM3::MapPoint *> nonNullMapPoints;
-            std::copy_if(trackedMapPoints.begin(), trackedMapPoints.end(),
-                         std::back_inserter(nonNullMapPoints),
-                         [](ORB_SLAM3::MapPoint *p)
-                         { return p != nullptr; });
-            // cout << "Filtered map points: " << nonNullMapPoints.size() << endl;
-
-            // Create a 3 x m matrix for the current frame’s points.
-            // Minimal change: store the pointers directly.
-            allFramePoints.push_back(nonNullMapPoints);
             all2dPoints.push_back(SLAM.Get2dPoints());
-
+            all3dPoints.push_back(SLAM.Get3dPoints());
         }
 
         double T = 0;
@@ -257,35 +245,34 @@ py::array_t<double> multiply_array(py::array_t<double> input_array)
 py::tuple get_2d_points() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
     py::list frames_list;
-
+    
     // Iterate over all frames stored in all2dPoints
     for (size_t k = 0; k < all2dPoints.size(); k++) {
-        const std::vector<cv::Point2f>& frame2DPoints = all2dPoints[k];
+        const std::vector<cv::Point3f>& frame3DPoints = all2dPoints[k]; // Updated to Point3f
         
         // Create a points vector for this frame
         std::vector<float> points;
         
-        // Process each 2D point in this frame
-        for (size_t j = 0; j < frame2DPoints.size(); ++j) {
-            const cv::Point2f& pt = frame2DPoints[j];
+        // Process each 3D point in this frame
+        for (size_t j = 0; j < frame3DPoints.size(); ++j) {
+            const cv::Point3f& pt = frame3DPoints[j]; // Updated to Point3f
             
-            // Store u, v coordinates (depth is not available from 2D points)
-            points.push_back(pt.x);  // u coordinate
-            points.push_back(pt.y);  // v coordinate
-            points.push_back(0.0f);  // Placeholder for depth which we don't have
+            // Store u, v coordinates and depth
+            points.push_back(pt.x); // u coordinate
+            points.push_back(pt.y); // v coordinate
+            points.push_back(pt.z); // Actual depth from the Point3f
         }
-
-        // Create a NumPy array even if there are no points (to maintain frame indexing)
-        int num_points = frame2DPoints.size();
         
+        // Create a NumPy array even if there are no points (to maintain frame indexing)
+        int num_points = frame3DPoints.size();
         if (num_points > 0) {
             // If we have points, create properly sized array
             py::array_t<float> frame_array({3, num_points});
             auto arr = frame_array.mutable_unchecked<2>();
             for (int j = 0; j < num_points; ++j) {
-                arr(0, j) = points[3 * j + 0];  // u coordinate  
-                arr(1, j) = points[3 * j + 1];  // v coordinate
-                arr(2, j) = points[3 * j + 2];  // depth placeholder
+                arr(0, j) = points[3 * j + 0]; // u coordinate
+                arr(1, j) = points[3 * j + 1]; // v coordinate
+                arr(2, j) = points[3 * j + 2]; // actual depth value
             }
             frames_list.append(frame_array);
         } else {
@@ -300,8 +287,7 @@ py::tuple get_2d_points() {
     return py::make_tuple(frames_list);
 }
 
-
-py::tuple get_all_data_np() {
+py::array_t<float> get_camera_poses_np() {
     std::lock_guard<std::mutex> lock(camPoseMutex);
     size_t n = allCamPoses.size();
 
@@ -309,6 +295,7 @@ py::tuple get_all_data_np() {
     std::vector<py::ssize_t> pose_shape{4, 4, static_cast<py::ssize_t>(n)};
     py::array_t<float> poses(pose_shape);
     auto poses_buf = poses.mutable_unchecked<3>();
+    
     for (size_t k = 0; k < n; k++) {
         for (size_t i = 0; i < 4; i++) {
             for (size_t j = 0; j < 4; j++) {
@@ -316,33 +303,80 @@ py::tuple get_all_data_np() {
             }
         }
     }
+    
+    return poses;
+}
 
-    // Build a Python list of point arrays (each of shape (3, m))
+py::list get_3d_points_np() {
+    std::lock_guard<std::mutex> lock(camPoseMutex);
     py::list points_list;
-    for (size_t k = 0; k < allFramePoints.size(); k++) {
-        const std::vector<ORB_SLAM3::MapPoint*>& frameMPs = allFramePoints[k];
-        int m = frameMPs.size();
+    
+    // Build a Python list of point arrays
+    for (size_t k = 0; k < all3dPoints.size(); k++) {
+        const std::vector<cv::Point3f>& framePoints = all3dPoints[k];
+        int m = framePoints.size();
+        
+        // Create array with shape (3, m)
         std::vector<py::ssize_t> pts_shape{3, m};
         py::array_t<float> pts_arr(pts_shape);
         auto pts_buf = pts_arr.mutable_unchecked<2>();
+        
+        // Directly copy the cv::Point3f values to the array
         for (int j = 0; j < m; j++) {
-            if (frameMPs[j] && !frameMPs[j]->isBad()) {
-                Eigen::Vector3f pos = frameMPs[j]->GetWorldPos();
-                pts_buf(0, j) = pos(0);
-                pts_buf(1, j) = pos(1);
-                pts_buf(2, j) = pos(2);
-            } else {
-                pts_buf(0, j) = 0;
-                pts_buf(1, j) = 0;
-                pts_buf(2, j) = 0;
-            }
+            pts_buf(0, j) = framePoints[j].x;
+            pts_buf(1, j) = framePoints[j].y;
+            pts_buf(2, j) = framePoints[j].z;
         }
+        
         points_list.append(pts_arr);
     }
     
-
-    return py::make_tuple(poses, points_list);
+    return points_list;
 }
+
+
+// py::tuple get_all_data_np() {
+//     std::lock_guard<std::mutex> lock(camPoseMutex);
+//     size_t n = allCamPoses.size();
+
+//     // Create a shape vector for poses: (4,4,n)
+//     std::vector<py::ssize_t> pose_shape{4, 4, static_cast<py::ssize_t>(n)};
+//     py::array_t<float> poses(pose_shape);
+//     auto poses_buf = poses.mutable_unchecked<3>();
+//     for (size_t k = 0; k < n; k++) {
+//         for (size_t i = 0; i < 4; i++) {
+//             for (size_t j = 0; j < 4; j++) {
+//                 poses_buf(i, j, k) = allCamPoses[k](i, j);
+//             }
+//         }
+//     }
+
+//     // Build a Python list of point arrays (each of shape (3, m))
+//     py::list points_list;
+//     for (size_t k = 0; k < allFramePoints.size(); k++) {
+//         const std::vector<ORB_SLAM3::MapPoint*>& frameMPs = allFramePoints[k];
+//         int m = frameMPs.size();
+//         std::vector<py::ssize_t> pts_shape{3, m};
+//         py::array_t<float> pts_arr(pts_shape);
+//         auto pts_buf = pts_arr.mutable_unchecked<2>();
+//         for (int j = 0; j < m; j++) {
+//             if (frameMPs[j] && !frameMPs[j]->isBad()) {
+//                 Eigen::Vector3f pos = frameMPs[j]->GetWorldPos();
+//                 pts_buf(0, j) = pos(0);
+//                 pts_buf(1, j) = pos(1);
+//                 pts_buf(2, j) = pos(2);
+//             } else {
+//                 pts_buf(0, j) = 0;
+//                 pts_buf(1, j) = 0;
+//                 pts_buf(2, j) = 0;
+//             }
+//         }
+//         points_list.append(pts_arr);
+//     }
+    
+
+//     return py::make_tuple(poses, points_list);
+// }
 
 
 // Define the module and bind functions here (single module definition)
@@ -364,9 +398,15 @@ PYBIND11_MODULE(orbslam3, m)
     m.def("multiply_array", &multiply_array,
           "Multiply all elements in a NumPy array by 2.");
 
-    m.def("get_all_data_np", &get_all_data_np,
-          "Return a tuple (poses, points_list) where 'poses' is a NumPy array of shape (4,4,n) "
-          "and 'points_list' is a list of NumPy arrays (each of shape (3, m_i)).");
+    m.def("get_camera_poses_np", &get_camera_poses_np,
+    "Get camera poses as a numpy array with shape (4, 4, n) where n is the number of poses");
+
+    m.def("get_3d_points_np", &get_3d_points_np,
+        "Get 3D points as a list of numpy arrays, each with shape (3, m) where m is the number of points in the frame");
+
+    // m.def("get_all_data_np", &get_all_data_np,
+    //       "Return a tuple (poses, points_list) where 'poses' is a NumPy array of shape (4,4,n) "
+    //       "and 'points_list' is a list of NumPy arrays (each of shape (3, m_i)).");
 
     m.def("get_2d_points", &get_2d_points,
         "abc");
