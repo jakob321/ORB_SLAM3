@@ -500,16 +500,66 @@ vector<cv::Point3f> System::Get3dPoints()
     return filtered3dPoints;
 }
 
+// vector<cv::Point3f> System::Get2dPoints()
+// {
+//     vector<cv::KeyPoint> mvCurrentKeys = mpTracker->mCurrentFrame.mvKeys;
+//     int N = mvCurrentKeys.size();
+//     vector<bool> mvbVO = vector<bool>(N, false);
+//     vector<bool> mvbMap = vector<bool>(N, false);
+//     vector<cv::Point3f> filtered3dPoints; // Changed to Point3f to include depth
+    
+//     if(mpTracker->mLastProcessedState==Tracking::OK)
+//     {
+//         for(int i=0; i<N; i++)
+//         {
+//             MapPoint* pMP = mpTracker->mCurrentFrame.mvpMapPoints[i];
+//             if(pMP)
+//             {
+//                 if(!mpTracker->mCurrentFrame.mvbOutlier[i])
+//                 {
+//                     if(pMP->Observations()>0)
+//                         mvbMap[i]=true;
+//                     else
+//                         mvbVO[i]=true;
+//                 }
+//             }
+//         }
+        
+//         // Use N instead of defining a new variable n - they're the same size
+//         for(int i=0; i<N; i++)
+//         {
+//             if(mvbVO[i] || mvbMap[i]) // Note: using mvbVO and mvbMap, not vbVO and vbMap
+//             {
+//                 // Get depth from mCurrentFrame.mvDepth if available
+//                 float depth = 0.0f;
+//                 if(i < mpTracker->mCurrentFrame.mvDepth.size())
+//                     depth = mpTracker->mCurrentFrame.mvDepth[i];
+//                     if(depth==-1){
+//                         cout<< "not valid depth" << endl;
+//                     } else{
+//                         cout<< "fine" << endl;
+//                     }
+                
+//                 // Append to our filtered points list with depth as z-coordinate
+//                 filtered3dPoints.push_back(cv::Point3f(mvCurrentKeys[i].pt.x, mvCurrentKeys[i].pt.y, depth));
+//             }
+//         }
+//     }
+    
+//     return filtered3dPoints;
+// }
+
 vector<cv::Point3f> System::Get2dPoints()
 {
     vector<cv::KeyPoint> mvCurrentKeys = mpTracker->mCurrentFrame.mvKeys;
     int N = mvCurrentKeys.size();
     vector<bool> mvbVO = vector<bool>(N, false);
     vector<bool> mvbMap = vector<bool>(N, false);
-    vector<cv::Point3f> filtered3dPoints; // Changed to Point3f to include depth
+    vector<cv::Point3f> filtered3dPoints; // Point3f stores (x, y, depth)
     
     if(mpTracker->mLastProcessedState==Tracking::OK)
     {
+        // First pass: mark valid MapPoints
         for(int i=0; i<N; i++)
         {
             MapPoint* pMP = mpTracker->mCurrentFrame.mvpMapPoints[i];
@@ -525,17 +575,34 @@ vector<cv::Point3f> System::Get2dPoints()
             }
         }
         
-        // Use N instead of defining a new variable n - they're the same size
+        // Second pass: calculate depth for valid points
         for(int i=0; i<N; i++)
         {
-            if(mvbVO[i] || mvbMap[i]) // Note: using mvbVO and mvbMap, not vbVO and vbMap
+            if(mvbVO[i] || mvbMap[i])
             {
-                // Get depth from mCurrentFrame.mvDepth if available
-                float depth = 0.0f;
-                if(i < mpTracker->mCurrentFrame.mvDepth.size())
-                    depth = mpTracker->mCurrentFrame.mvDepth[i];
+                // Calculate depth using the MapPoint position
+                float depth = -1.0f; // Default value for points without valid depth
                 
-                // Append to our filtered points list with depth as z-coordinate
+                MapPoint* pMP = mpTracker->mCurrentFrame.mvpMapPoints[i];
+                if(pMP && !mpTracker->mCurrentFrame.mvbOutlier[i])
+                {
+                    // Get MapPoint position in world coordinates
+                    Eigen::Vector3f P = pMP->GetWorldPos();
+                    
+                    // Transform to camera coordinates using the frame's pose
+                    Sophus::SE3f Tcw = mpTracker->mCurrentFrame.GetPose();
+                    Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                    Eigen::Vector3f Pc = Rcw * P + Tcw.translation();
+                    
+                    // Extract the depth (Z component)
+                    depth = Pc(2);
+                    
+                    // Ensure positive depth
+                    if(depth <= 0.0f)
+                        depth = -1.0f;
+                }
+                
+                // Append to our filtered points list with calculated depth as z-coordinate
                 filtered3dPoints.push_back(cv::Point3f(mvCurrentKeys[i].pt.x, mvCurrentKeys[i].pt.y, depth));
             }
         }
